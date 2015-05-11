@@ -25,7 +25,7 @@
   <name>storm-starter</name>
 	
   <dependencies>
-    <dependency>
+<!--     <dependency>
       <groupId>com.hmsonline</groupId>
       <artifactId>storm-cassandra</artifactId>
       <version>0.4.0-rc4</version>
@@ -35,6 +35,12 @@
         <artifactId>slf4j-log4j12</artifactId>
       </exclusion>
     </exclusions> 
+    </dependency> -->
+
+    <dependency>
+      <groupId>com.hmsonline</groupId>
+      <artifactId>storm-cassandra-cql</artifactId>
+      <version>0.3.0</version>
     </dependency>
     <dependency>
       <artifactId>storm-core</artifactId>

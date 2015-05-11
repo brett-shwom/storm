@@ -31,46 +31,43 @@ import java.util.Random;
 import storm.trident.testing.FixedBatchSpout;
 import storm.trident.operation.builtin.Count;
 import storm.trident.state.StateFactory;
-import com.hmsonline.storm.cassandra.StormCassandraConstants;
-import com.hmsonline.storm.cassandra.trident.CassandraMapState;
-import com.hmsonline.storm.cassandra.trident.CassandraMapState.Options;
+// import com.hmsonline.storm.cassandra.StormCassandraConstants;
+// import com.hmsonline.storm.cassandra.trident.CassandraMapState;
+// import com.hmsonline.storm.cassandra.trident.CassandraMapState.Options;
 import storm.trident.state.TransactionalValue;
 import storm.trident.state.OpaqueValue;
 import backtype.storm.LocalDRPC;
 
-import com.netflix.astyanax.AstyanaxContext;
+//import com.netflix.astyanax.AstyanaxContext;
+import com.hmsonline.trident.cql.CassandraCqlMapState;
+import com.hmsonline.trident.cql.MapConfiguredCqlClientFactory;
+
+import java.io.Serializable;
+import java.util.List;
+
+import storm.trident.tuple.TridentTuple;
+
+import com.datastax.driver.core.Row;
+import com.datastax.driver.core.Statement;
+import com.datastax.driver.core.querybuilder.Insert;
+import com.datastax.driver.core.querybuilder.QueryBuilder;
+import com.datastax.driver.core.querybuilder.Select;
+import com.hmsonline.trident.cql.mappers.CqlRowMapper;
+
+import storm.trident.operation.CombinerAggregator;
 
 
 
 public class ImpressionTridentTopology {
     private static final Logger log = LoggerFactory.getLogger(ImpressionTridentTopology.class);
     private static String KEYSPACE = "test";
-    private static String CASSANDRA_HOST_AND_PORT = "localhost:9160";
-
-    // public static void setupCassandra() throws Exception {
-    //     try {
-
-    //         AstyanaxContext<Cluster> clusterContext = newClusterContext(CASSANDRA_HOST_AND_PORT);
-
-    //         //createColumnFamily(clusterContext, KEYSPACE, "transactional", "UTF8Type", "UTF8Type", "UTF8Type");
-    //         //createColumnFamily(clusterContext, KEYSPACE, "nontransactional", "UTF8Type", "UTF8Type", "UTF8Type");
-    //         createColumnFamily(clusterContext, KEYSPACE, "opaque", "UTF8Type", "UTF8Type", "UTF8Type");
-
-    //     } catch (Exception e) {
-    //         LOG.warn("Couldn't setup cassandra.", e);
-    //         throw e;
-    //     }
-    // }
+    private static String CASSANDRA_HOST = "localhost";
 
     public static void main(String[] args) throws Exception {
 
-
-        HashMap<String, Object> clientConfig = new HashMap<String, Object>();
-        clientConfig.put(StormCassandraConstants.CASSANDRA_HOST, CASSANDRA_HOST_AND_PORT);
-        clientConfig.put(StormCassandraConstants.CASSANDRA_STATE_KEYSPACE, KEYSPACE);
         Config config = new Config();
+        config.put(MapConfiguredCqlClientFactory.TRIDENT_CASSANDRA_CQL_HOSTS, CASSANDRA_HOST);
         config.setMaxSpoutPending(25);
-        config.put("cassandra.config", clientConfig);
         config.setDebug(true);
 
         LocalCluster cluster = new LocalCluster();
@@ -97,9 +94,9 @@ public class ImpressionTridentTopology {
 
 
 
-        Options options = new Options<OpaqueValue>();
-        options.columnFamily = "opaque";
-        StateFactory cassandraStateFactory = CassandraMapState.opaque(options);  
+        // Options options = new Options<OpaqueValue>();
+        // options.columnFamily = "opaque";
+        // StateFactory cassandraStateFactory = CassandraMapState.opaque(options);  
 
         
         //LocalDRPC client = new LocalDRPC();
@@ -109,7 +106,8 @@ public class ImpressionTridentTopology {
                 .newStream("impressions", spout)
                 .groupBy(new Fields("cid"))
                 // .each(new Fields("cid", "count"), new Print(), new Fields("cid", "count"))
-                .persistentAggregate(cassandraStateFactory, new Count(), new Fields("count"))
+                //.persistentAggregate(cassandraStateFactory, new Count(), new Fields("count"))
+                .persistentAggregate(CassandraCqlMapState.nonTransactional(new ImpressionCountMapper()),new LongCount(), new Fields("count") )
                 .parallelismHint(1)
                 .newValuesStream() //beware of putting stuff between this statement and the next: http://grokbase.com/t/gg/storm-user/132pg1fjnh/problem-chaining-trident-state-updaters
                 .each(new Fields("cid", "count"), new Print())
@@ -187,6 +185,74 @@ class Print extends BaseFilter {
     public boolean isKeep(TridentTuple tuple) {
         System.err.println(String.format("%s::Partition idx: %s out of %s partitions got %s", name, partitionIndex, numPartitions, tuple.toString()));
         return true;
+    }
+}
+
+
+
+//https://github.com/hmsonline/storm-cassandra-cql/blob/master/src/test/java/com/hmsonline/trident/cql/example/wordcount/WordCountAndSourceMapper.java
+class ImpressionCountMapper implements CqlRowMapper<List<String>, Number>, Serializable {
+    private static final long serialVersionUID = 1L;
+    //private static final Logger LOG = LoggerFactory.getLogger(WordCountAndSourceMapper.class);
+
+    public static final String KEYSPACE_NAME = "mykeyspace";
+    public static final String TABLE_NAME = "impressioncounttable";
+    public static final String CID_KEY_NAME = "cid";
+    public static final String VALUE_NAME = "count";
+
+    @Override
+    public Statement map(List<String> keys, Number value) {
+        Insert statement = QueryBuilder.insertInto(KEYSPACE_NAME, TABLE_NAME);
+        statement.value(CID_KEY_NAME, keys.get(0));
+        statement.value(VALUE_NAME, value);
+        return statement;
+    }
+
+    @Override
+    public Statement retrieve(List<String> keys) {
+        // Retrieve all the columns associated with the keys
+        Select statement = QueryBuilder
+                .select()
+                .column(CID_KEY_NAME)
+                .column(VALUE_NAME)
+                .from(KEYSPACE_NAME, TABLE_NAME);
+        statement.where(QueryBuilder.eq(CID_KEY_NAME, keys.get(0)));
+        return statement;
+    }
+
+    @Override
+    public Number getValue(Row row) {
+        return (Number) row.getInt(VALUE_NAME);
+    }
+
+    @Override
+    public Statement map(TridentTuple tuple) {
+        return null;
+    }
+
+
+}
+
+
+
+
+
+class LongCount implements CombinerAggregator<Long> {
+    private static final long serialVersionUID = 1L;
+
+    @Override
+    public Long init(TridentTuple tuple) {
+        return 1L;
+    }
+
+    @Override
+    public Long combine(Long val1, Long val2) {
+        return val1 + val2;
+    }
+
+    @Override
+    public Long zero() {
+        return 0L;
     }
 }
 
